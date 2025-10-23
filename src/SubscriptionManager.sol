@@ -94,7 +94,11 @@ abstract contract SubscriptionManager is Ownable, ReentrancyGuard, Pausable {
         address indexed creator,
         uint256 amount
     );
-    
+
+    event SubscriptionRenewed(
+        uint256 indexed subscriptionId,
+        uint256 newEndTime
+    );
     event PlatformFeeUpdated(uint256 newFee);
 
     //============Errors=================
@@ -103,6 +107,7 @@ abstract contract SubscriptionManager is Ownable, ReentrancyGuard, Pausable {
     error InvalidTier();
     error InsufficientBalance();
     error SubscriptionExists();
+    error NoActiveSubscription();
     //============Constructor==============
 
     constructor(address _paymentToken) {
@@ -195,6 +200,14 @@ abstract contract SubscriptionManager is Ownable, ReentrancyGuard, Pausable {
         uint256 platformFee = (tier.price * s_platformFeePercent) / FEE_DENOMINATOR;
         uint256 creatorAmount = tier.price - platformFee;
 
+        // Transfer payment
+        bool success = s_paymentToken.transferFrom(msg.sender, address(this), tier.price);
+        require(success, "Payment transfer failed");
+        
+        // Update creator balance
+        creatorBalances[creator] += creatorAmount;
+        creatorBalances[owner()] += platformFee;
+
         // Create subscription
         uint256 subscriptionId = ++s_subscriptionCounter;
         uint256 endTime = block.timestamp + tier.duration;
@@ -224,5 +237,148 @@ abstract contract SubscriptionManager is Ownable, ReentrancyGuard, Pausable {
         );
         
         return subscriptionId;
+    }
+
+    /**
+     * @notice Cancel an active subscription
+     * @param creator Address of the creator
+     */
+    function cancelSubscription(address creator) external {
+        uint256 subscriptionId = activeSubscription[msg.sender][creator];
+        if (subscriptionId == 0) revert NoActiveSubscription();
+
+        Subscription storage sub = subscriptions[subscriptionId];
+        if (!sub.isActive) revert NoActiveSubscription();
+
+        sub.isActive = false;
+        sub.autoRenew = false;
+        delete activeSubscription[msg.sender][creator];
+        subscriberCount[creator]--;
+        
+        emit SubscriptionCancelled(subscriptionId, msg.sender, creator);
+    }
+
+    /**
+     * @notice Manually renew a subscription
+     * @param creator Address of creator
+     */
+    function renewSubscription(address creator) external nonReentrant whenNotPaused {
+        uint256 subscriptionId = activeSubscription[msg.sender][creator];
+        if (subscriptionId == 0) revert NoActiveSubscription();
+
+        Subscription storage sub = subscriptions[subscriptionId];
+        if (!sub.isActive) revert NoActiveSubscription();
+        
+        CreatorTier memory tier = creatorTier[creator][sub.tier];
+        if (!tier.isActive) revert InvalidTier();
+
+        // Calculate fees
+        uint256 platformFee = (tier.price * s_platformFeePercent) / FEE_DENOMINATOR;
+        uint256 creatorAmount = tier.price - platformFee;
+
+        // Transfer payment
+        bool success = s_paymentToken.transferFrom(msg.sender, address(this), tier.price);
+        require(success, "Payment transfer failed");
+        
+        // Update balances
+        creatorBalances[creator] += creatorAmount;
+        creatorBalances[owner()] += platformFee;
+        
+        // Extend subscription
+        uint256 newEndTime = block.timestamp > sub.endTime 
+            ? block.timestamp + tier.duration 
+            : sub.endTime + tier.duration;
+            
+        sub.endTime = newEndTime;
+        
+        emit SubscriptionRenewed(subscriptionId, newEndTime);
+    }
+
+    // ============ View Functions ============
+    
+    /**
+     * @notice Check if a subscription is currently active
+     */
+    function isSubscriptionActive(
+        address subscriber,
+        address creator
+    ) external view returns (bool) {
+        uint256 subscriptionId = activeSubscription[subscriber][creator];
+        if (subscriptionId == 0) return false;
+        
+        Subscription memory sub = subscriptions[subscriptionId];
+        return sub.isActive && block.timestamp <= sub.endTime;
+    }
+    
+    /**
+     * @notice Get subscription details
+     */
+    function getSubscription(uint256 subscriptionId) 
+        external 
+        view 
+        returns (Subscription memory) 
+    {
+        return subscriptions[subscriptionId];
+    }
+    
+    /**
+     * @notice Get tier details
+     */
+    function getTier(address creator, uint256 tierId) 
+        external 
+        view 
+        returns (CreatorTier memory) 
+    {
+        return creatorTier[creator][tierId];
+    }
+    
+    /**
+     * @notice Get all tiers for a creator
+     */
+    function getCreatorTiers(address creator) 
+        external 
+        view 
+        returns (CreatorTier[] memory) 
+    {
+        uint256 count = creatorTierCount[creator];
+        CreatorTier[] memory tiers = new CreatorTier[](count);
+        
+        for (uint256 i = 0; i < count; i++) {
+            tiers[i] = creatorTier[creator][i];
+        }
+        
+        return tiers;
+    }
+    
+    // ============ Admin Functions ============
+    
+    /**
+     * @notice Update platform fee percentage
+     */
+    function updatePlatformFee(uint256 newFee) external onlyOwner {
+        require(newFee <= 1000, "Fee too high"); // Max 10%
+        s_platformFeePercent = newFee;
+        emit PlatformFeeUpdated(newFee);
+    }
+    
+    /**
+     * @notice Set AccessPass NFT contract address
+     */
+    function setAccessPassNFT(address _accessPassNFT) external onlyOwner {
+        s_accessPassNFT = _accessPassNFT;
+    }
+    
+    /**
+     * @notice Pause contract in emergency
+     */
+    function pause() external onlyOwner {
+        _pause();
+    }
+    
+    /**
+     * @notice Unpause contract
+     */
+    function unpause() external onlyOwner {
+        _unpause();
     }
 }
