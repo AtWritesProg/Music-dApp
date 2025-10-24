@@ -140,4 +140,200 @@ abstract contract CreatorRegistry is Ownable, Pausable {
 
         emit ProfileUpdated(msg.sender, metadataURI);
     }
+
+    /**
+     * @notice Deactivate creator profile 
+     */
+    function deactivateProfile() external {
+        if (!isRegistered[msg.sender]) revert NotRegistered();
+        
+        creators[msg.sender].isActive = false;
+        
+        emit CreatorDeactivated(msg.sender);
+    }
+
+    /**
+     * @notice Reactivate creator profile
+     */
+    function reactivateProfile() external {
+        if (!isRegistered[msg.sender]) revert NotRegistered();
+        
+        creators[msg.sender].isActive = true;
+        
+        emit CreatorReactivated(msg.sender);
+    }
+
+    /**
+     * @notice Update creator statistics
+     * @dev Should be called by SubscriptionManager contract
+     */
+    function updateCreatorStats(
+        address creator,
+        uint256 subscriberDelta,
+        uint256 revenueDelta,
+        bool isIncrement
+    ) external {
+        if (!isRegistered[creator]) revert NotRegistered();
+
+        CreatorProfile storage profile = creators[creator];
+
+        if (isIncrement) {
+            profile.totalSubscribers += subscriberDelta;
+            profile.totalRevenue += revenueDelta;
+        } else {
+            profile.totalSubscribers -= subscriberDelta;
+        }
+
+        emit StatsUpdated(creator, profile.totalSubscribers, profile.totalRevenue);
+    }
+
+    //==================View Functions ===================
+
+    /**
+     * @notice Get creator profile
+     */
+    function getCreatorProfile(address creator) external view returns (CreatorProfile memory) {
+        return creators[creator];
+    }
+
+    /**
+     * @notice Get all registered creators
+     */
+    function getAllCreators() external view returns (address[] memory) {
+        return creatorList;
+    }
+    
+    /**
+     * @notice Get active creators only
+     */
+    function getActiveCreators() external view returns (address[] memory) {
+        uint256 activeCount = 0;
+        
+        // Count active creators
+        for (uint256 i = 0; i < creatorList.length; i++) {
+            if (creators[creatorList[i]].isActive) {
+                activeCount++;
+            }
+        }
+        
+        // Create array of active creators
+        address[] memory activeCreators = new address[](activeCount);
+        uint256 index = 0;
+        
+        for (uint256 i = 0; i < creatorList.length; i++) {
+            if (creators[creatorList[i]].isActive) {
+                activeCreators[index] = creatorList[i];
+                index++;
+            }
+        }
+        
+        return activeCreators;
+    }
+    
+    /**
+     * @notice Get verified creators only
+     */
+    function getVerifiedCreators() external view returns (address[] memory) {
+        uint256 verifiedCount = 0;
+        
+        // Count verified creators
+        for (uint256 i = 0; i < creatorList.length; i++) {
+            if (creators[creatorList[i]].isVerified && creators[creatorList[i]].isActive) {
+                verifiedCount++;
+            }
+        }
+        
+        // Create array of verified creators
+        address[] memory verifiedCreators = new address[](verifiedCount);
+        uint256 index = 0;
+        
+        for (uint256 i = 0; i < creatorList.length; i++) {
+            if (creators[creatorList[i]].isVerified && creators[creatorList[i]].isActive) {
+                verifiedCreators[index] = creatorList[i];
+                index++;
+            }
+        }
+        
+        return verifiedCreators;
+    }
+    
+    /**
+     * @notice Search creators by name (off-chain indexing recommended)
+     */
+    function getCreatorByAddress(address creator) 
+        external 
+        view 
+        returns (
+            string memory name,
+            string memory metadataURI,
+            bool verified,
+            bool active,
+            uint256 totalSubscribers
+        ) 
+    {
+        CreatorProfile memory profile = creators[creator];
+        return (
+            profile.name,
+            profile.metadataURI,
+            profile.isVerified,
+            profile.isActive,
+            profile.totalSubscribers
+        );
+    }
+    
+    // ============ Admin Functions ============
+    
+    /**
+     * @notice Verify a creator (blue checkmark)
+     */
+    function verifyCreator(address creator) external onlyOwner {
+        if (!isRegistered[creator]) revert NotRegistered();
+        
+        creators[creator].isVerified = true;
+        isVerified[creator] = true;
+        
+        emit CreatorVerified(creator);
+    }
+    
+    /**
+     * @notice Remove verification from a creator
+     */
+    function unverifyCreator(address creator) external onlyOwner {
+        if (!isRegistered[creator]) revert NotRegistered();
+        
+        creators[creator].isVerified = false;
+        isVerified[creator] = false;
+        
+        emit CreatorUnverified(creator);
+    }
+    
+    /**
+     * @notice Update registration fee
+     */
+    function updateRegistrationFee(uint256 newFee) external onlyOwner {
+        s_registrationFee = newFee;
+    }
+    
+    /**
+     * @notice Withdraw accumulated registration fees
+     */
+    function withdrawFees() external onlyOwner {
+        uint256 balance = address(this).balance;
+        (bool success, ) = payable(owner()).call{value: balance}("");
+        require(success, "Transfer failed");
+    }
+    
+    /**
+     * @notice Pause contract
+     */
+    function pause() external onlyOwner {
+        _pause();
+    }
+    
+    /**
+     * @notice Unpause contract
+     */
+    function unpause() external onlyOwner {
+        _unpause();
+    }
 }
