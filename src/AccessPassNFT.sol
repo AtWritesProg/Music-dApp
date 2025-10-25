@@ -148,4 +148,31 @@ contract AccessPassNFT is ERC721, ERC721Burnable , ERC721URIStorage, AccessContr
         emit PassRenewed(tokenId, newExpiry);
     }
 
+    // ============ Required Overrides ============
+    
+    // function _burn(uint256 tokenId) 
+    //     internal 
+    //     override(ERC721, ERC721URIStorage) 
+    // {
+    //     super._burn(tokenId);
+    //     delete passMetadata[tokenId];
+    // }
+    
+    function tokenURI(uint256 tokenId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (string memory)
+    {
+        return super.tokenURI(tokenId);
+    }
+    
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721, ERC721URIStorage, AccessControl)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
 }
