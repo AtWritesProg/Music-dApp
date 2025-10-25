@@ -63,7 +63,7 @@ contract AccessPassNFT is ERC721, ERC721Burnable , ERC721URIStorage, AccessContr
     //============Error============
 
     error PassExists();
-    error PassExpired();
+    error PassesExpired();
 
     //============Constructor=============
 
@@ -136,7 +136,7 @@ contract AccessPassNFT is ERC721, ERC721Burnable , ERC721URIStorage, AccessContr
     ) external onlyRole(MINTER_ROLE) {
         PassMetadata storage metadata = passMetadata[tokenId];
         
-        if (!metadata.active) revert PassExpired();
+        if (!metadata.active) revert PassesExpired();
         
         // Extend from current expiry or now (whichever is later)
         uint256 newExpiry = block.timestamp > metadata.expiryTime
