@@ -64,6 +64,7 @@ contract AccessPassNFT is ERC721, ERC721Burnable , ERC721URIStorage, AccessContr
 
     error PassExists();
     error PassesExpired();
+    error SoulBoundToken();
 
     //============Constructor=============
 
