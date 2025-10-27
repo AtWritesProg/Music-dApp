@@ -148,6 +148,132 @@ contract AccessPassNFT is ERC721, ERC721Burnable , ERC721URIStorage, AccessContr
         emit PassRenewed(tokenId, newExpiry);
     }
 
+    /**
+     * @notice Deactivate an expired or cancelled pass
+     * @param tokenId Token ID to expire
+     */
+    function expirePass(uint256 tokenId) external onlyRole(MINTER_ROLE) {
+        PassMetadata storage metadata = passMetadata[tokenId];
+        
+        if (!metadata.active) return;
+        
+        metadata.active = false;
+        delete userPasses[metadata.subscriber][metadata.creator];
+        
+        emit PassExpired(tokenId, metadata.subscriber, metadata.creator);
+    }
+    
+    // ============ View Functions ============
+    
+    /**
+     * @notice Check if a pass is currently valid
+     * @param tokenId Token ID to check
+     */
+    function isPassValid(uint256 tokenId) public view returns (bool) {
+        PassMetadata memory metadata = passMetadata[tokenId];
+        return metadata.active && block.timestamp <= metadata.expiryTime;
+    }
+    
+    /**
+     * @notice Verify if a user has valid access to a creator's content
+     * @param subscriber Address of the subscriber
+     * @param creator Address of the creator
+     */
+    function verifyAccess(
+        address subscriber,
+        address creator
+    ) external view returns (bool, uint256) {
+        uint256 tokenId = userPasses[subscriber][creator];
+        
+        if (tokenId == 0) return (false, 0);
+        
+        bool valid = isPassValid(tokenId);
+        return (valid, tokenId);
+    }
+    
+    /**
+     * @notice Get pass metadata
+     */
+    function getPassMetadata(uint256 tokenId) 
+        external 
+        view 
+        returns (PassMetadata memory) 
+    {
+        return passMetadata[tokenId];
+    }
+    
+    /**
+     * @notice Get time remaining on a pass
+     */
+    function getTimeRemaining(uint256 tokenId) 
+        external 
+        view 
+        returns (uint256) 
+    {
+        PassMetadata memory metadata = passMetadata[tokenId];
+        
+        if (!metadata.active || block.timestamp >= metadata.expiryTime) {
+            return 0;
+        }
+        
+        return metadata.expiryTime - block.timestamp;
+    }
+    
+    /**
+     * @notice Get all active passes for a creator
+     */
+    function getCreatorActivePasses(address creator) 
+        external 
+        view 
+        returns (uint256[] memory) 
+    {
+        uint256[] memory allPasses = creatorPasses[creator];
+        uint256 activeCount = 0;
+        
+        // Count active passes
+        for (uint256 i = 0; i < allPasses.length; i++) {
+            if (isPassValid(allPasses[i])) {
+                activeCount++;
+            }
+        }
+        
+        // Create array of active passes
+        uint256[] memory activePasses = new uint256[](activeCount);
+        uint256 index = 0;
+        
+        for (uint256 i = 0; i < allPasses.length; i++) {
+            if (isPassValid(allPasses[i])) {
+                activePasses[index] = allPasses[i];
+                index++;
+            }
+        }
+        
+        return activePasses;
+    }
+    
+    // ============ Soul-Bound Implementation ============
+    
+    /**
+     * @notice Prevent token transfers (soul-bound)
+     * @dev Overrides _update to make NFT non-transferable
+     */
+    function _update(
+        address to,
+        uint256 tokenId,
+        address auth
+    ) internal virtual override returns (address) {
+        address from = _ownerOf(tokenId);
+        
+        // Allow minting (from == address(0))
+        // Allow burning (to == address(0))
+        // Block all other transfers
+        if (from != address(0) && to != address(0)) {
+            revert SoulBoundToken();
+        }
+        
+        return super._update(to, tokenId, auth);
+    }
+
     // ============ Required Overrides ============
     
     // function _burn(uint256 tokenId) 
