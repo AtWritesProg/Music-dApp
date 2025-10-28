@@ -12,7 +12,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  * @notice Manages recurring subscriptions for music creators.
  * @dev Handles subscription payments, renewals, and cancellations.
  */
-abstract contract SubscriptionManager is Ownable, ReentrancyGuard, Pausable {
+contract SubscriptionManager is Ownable, ReentrancyGuard, Pausable {
     // ================ State Variables ====================
 
     IERC20 public s_paymentToken; // USDC, DAI, etc

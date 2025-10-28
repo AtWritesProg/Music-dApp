@@ -10,7 +10,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  * @notice Registry for verified music creator and their profile
  * @dev Handles creator verification, profiles, and reputation
  */
-abstract contract CreatorRegistry is Ownable, Pausable {
+contract CreatorRegistry is Ownable, Pausable {
     //========= State Variables ===========
     uint256 public s_registrationFee = 0.01 ether; //Anti-spam measure
     uint256 public s_creatorCount;
@@ -74,7 +74,7 @@ abstract contract CreatorRegistry is Ownable, Pausable {
     error NotRegistered();
 
     //=========Constructor=============
-    constructor() {}
+    constructor() Ownable(msg.sender) {}
 
     // =============Creator Functions==============
 
