@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "./SubscriptionManager.sol";
-import "./AccessPassNFT.sol";
-import "./CreatorRegistry.sol";
+import {SubscriptionManager} from  "./SubscriptionManager.sol";
+import {AccessPassNFT} from "./AccessPassNFT.sol";
+import {CreatorRegistry} from "./CreatorRegistry.sol";
 
 /**
  * @title SubifyFactory

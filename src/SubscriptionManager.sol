@@ -92,7 +92,7 @@ contract SubscriptionManager is Ownable, ReentrancyGuard, Pausable {
     error NoActiveSubscription();
     //============Constructor==============
 
-    constructor(address _paymentToken) {
+    constructor(address _paymentToken) Ownable(msg.sender) {
         s_paymentToken = IERC20(_paymentToken);
     }
 
