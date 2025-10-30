@@ -66,7 +66,27 @@ contract SubscriptionManagerTest is Test {
         address indexed subscriber,
         address indexed creator
     );
-    
+
+    event TierCreated(
+        address indexed creator,
+        uint256 tierId,
+        uint256 price,
+        uint256 duration,
+        string name
+    );
+
+    event FundsWithdrawn(
+        address indexed creator,
+        uint256 amount
+    );
+
+    event PlatformFeeUpdated(uint256 newFee);
+
+    event SubscriptionRenewed(
+        uint256 indexed subscriptionId,
+        uint256 newEndTime
+    );
+
     function setUp() public {
         owner = address(this);
         creator = makeAddr("creator");
@@ -213,7 +233,7 @@ contract SubscriptionManagerTest is Test {
         manager.renewSubscription(creator);
         vm.stopPrank();
         
-        (,,,,,uint256 endTime,,,,) = manager.subscriptions(1);
+        (,,,,,uint256 endTime,,,) = manager.subscriptions(1);
         assertEq(endTime, firstEndTime + TIER_DURATION);
     }
     
@@ -230,7 +250,7 @@ contract SubscriptionManagerTest is Test {
         manager.renewSubscription(creator);
         vm.stopPrank();
         
-        (,,,,,uint256 endTime,,,,) = manager.subscriptions(1);
+        (,,,,,uint256 endTime,,,) = manager.subscriptions(1);
         assertEq(endTime, block.timestamp + TIER_DURATION);
     }
     
@@ -282,7 +302,7 @@ contract SubscriptionManagerTest is Test {
     
     function testUpdatePlatformFee() public {
         manager.updatePlatformFee(500); // 5%
-        assertEq(manager.platformFeePercent(), 500);
+        assertEq(manager.s_platformFeePercent(), 500);
     }
     
     function testCannotSetPlatformFeeTooHigh() public {
@@ -305,42 +325,512 @@ contract SubscriptionManagerTest is Test {
     
     function testPauseAndUnpause() public {
         manager.pause();
-        
+
         vm.startPrank(subscriber);
         usdc.approve(address(manager), TIER_PRICE);
-        vm.expectRevert("Pausable: paused");
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
         manager.subscribe(creator, 0, false);
         vm.stopPrank();
-        
+
         manager.unpause();
-        
+
         vm.startPrank(subscriber);
         manager.subscribe(creator, 0, false);
         vm.stopPrank();
-        
+
         assertTrue(manager.isSubscriptionActive(subscriber, creator));
     }
     
     function testSubscriberCount() public {
         assertEq(manager.subscriberCount(creator), 0);
-        
+
         vm.startPrank(subscriber);
         usdc.approve(address(manager), TIER_PRICE);
         manager.subscribe(creator, 0, false);
         vm.stopPrank();
-        
+
         assertEq(manager.subscriberCount(creator), 1);
-        
+
         vm.startPrank(subscriber2);
         usdc.approve(address(manager), TIER_PRICE);
         manager.subscribe(creator, 0, false);
         vm.stopPrank();
-        
+
         assertEq(manager.subscriberCount(creator), 2);
-        
+
         vm.prank(subscriber);
         manager.cancelSubscription(creator);
-        
+
         assertEq(manager.subscriberCount(creator), 1);
+    }
+
+    // ============ Tier Management Tests ============
+
+    function testUpdateTier() public {
+        vm.startPrank(creator);
+
+        // Update the tier
+        manager.updateTier(0, 20 * 10**6, 60 days, true);
+
+        (uint256 price, uint256 duration, string memory name, bool active) =
+            manager.creatorTier(creator, 0);
+
+        assertEq(price, 20 * 10**6);
+        assertEq(duration, 60 days);
+        assertEq(name, "Basic");
+        assertTrue(active);
+        vm.stopPrank();
+    }
+
+    function testUpdateTierDeactivate() public {
+        vm.startPrank(creator);
+
+        // Deactivate the tier
+        manager.updateTier(0, 10 * 10**6, 30 days, false);
+
+        (,,, bool active) = manager.creatorTier(creator, 0);
+        assertFalse(active);
+        vm.stopPrank();
+    }
+
+    function testCannotUpdateInvalidTier() public {
+        vm.prank(creator);
+        vm.expectRevert(SubscriptionManager.InvalidTier.selector);
+        manager.updateTier(99, 10 * 10**6, 30 days, true);
+    }
+
+    function testCannotUpdateTierWithZeroPrice() public {
+        vm.prank(creator);
+        vm.expectRevert(SubscriptionManager.InvalidPrice.selector);
+        manager.updateTier(0, 0, 30 days, true);
+    }
+
+    function testCannotUpdateTierWithZeroDuration() public {
+        vm.prank(creator);
+        vm.expectRevert(SubscriptionManager.InvalidDuration.selector);
+        manager.updateTier(0, 10 * 10**6, 0, true);
+    }
+
+    function testCannotSubscribeToDeactivatedTier() public {
+        // Deactivate tier
+        vm.prank(creator);
+        manager.updateTier(0, 10 * 10**6, 30 days, false);
+
+        // Try to subscribe
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        vm.expectRevert(SubscriptionManager.InvalidTier.selector);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+    }
+
+    // ============ Subscription Expiry Tests ============
+
+    function testSubscriptionExpiry() public {
+        // Subscribe
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        // Check active before expiry
+        assertTrue(manager.isSubscriptionActive(subscriber, creator));
+
+        // Fast forward past expiry
+        vm.warp(block.timestamp + TIER_DURATION + 1);
+
+        // Check inactive after expiry
+        assertFalse(manager.isSubscriptionActive(subscriber, creator));
+    }
+
+    function testCannotRenewInactiveSubscription() public {
+        // Subscribe and cancel
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE * 2);
+        manager.subscribe(creator, 0, false);
+        manager.cancelSubscription(creator);
+
+        // Try to renew
+        vm.expectRevert(SubscriptionManager.NoActiveSubscription.selector);
+        manager.renewSubscription(creator);
+        vm.stopPrank();
+    }
+
+    function testRenewBeforeExpiry() public {
+        // Subscribe
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE * 2);
+        manager.subscribe(creator, 0, false);
+
+        uint256 firstEndTime = block.timestamp + TIER_DURATION;
+
+        // Renew immediately
+        manager.renewSubscription(creator);
+        vm.stopPrank();
+
+        // End time should extend from original end time
+        (,,,,,uint256 endTime,,,) = manager.subscriptions(1);
+        assertEq(endTime, firstEndTime + TIER_DURATION);
+    }
+
+    function testCannotRenewToDeactivatedTier() public {
+        // Subscribe
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE * 2);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        // Deactivate tier
+        vm.prank(creator);
+        manager.updateTier(0, 10 * 10**6, 30 days, false);
+
+        // Try to renew
+        vm.prank(subscriber);
+        vm.expectRevert(SubscriptionManager.InvalidTier.selector);
+        manager.renewSubscription(creator);
+    }
+
+    // ============ Multiple Tier Tests ============
+
+    function testMultipleTierSubscriptions() public {
+        address creator2 = makeAddr("creator2");
+
+        // Creator2 creates a tier
+        vm.prank(creator2);
+        manager.createTier(15 * 10**6, 60 days, "Premium");
+
+        // Subscriber subscribes to both creators
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE + 15 * 10**6);
+
+        manager.subscribe(creator, 0, false);
+        manager.subscribe(creator2, 0, false);
+        vm.stopPrank();
+
+        // Check both subscriptions are active
+        assertTrue(manager.isSubscriptionActive(subscriber, creator));
+        assertTrue(manager.isSubscriptionActive(subscriber, creator2));
+    }
+
+    function testSubscribeToDifferentTierSameCreator() public {
+        // Try to subscribe to the same creator again (should fail)
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE * 2);
+        manager.subscribe(creator, 0, false);
+
+        vm.expectRevert(SubscriptionManager.SubscriptionExists.selector);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+    }
+
+    function testResubscribeAfterCancel() public {
+        // Subscribe and cancel
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE * 2);
+        manager.subscribe(creator, 0, false);
+        manager.cancelSubscription(creator);
+
+        // Resubscribe should work
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        assertTrue(manager.isSubscriptionActive(subscriber, creator));
+    }
+
+    // ============ Fee Calculation Tests ============
+
+    function testPlatformFeeCalculation() public {
+        // Subscribe
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        uint256 platformFee = (TIER_PRICE * 300) / 10000; // 3%
+        uint256 creatorAmount = TIER_PRICE - platformFee;
+
+        assertEq(manager.creatorBalances(creator), creatorAmount);
+        assertEq(manager.creatorBalances(owner), platformFee);
+    }
+
+    function testDifferentPlatformFeeOnSubscription() public {
+        // Update platform fee to 5%
+        manager.updatePlatformFee(500);
+
+        // Subscribe
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        uint256 platformFee = (TIER_PRICE * 500) / 10000; // 5%
+        uint256 creatorAmount = TIER_PRICE - platformFee;
+
+        assertEq(manager.creatorBalances(creator), creatorAmount);
+        assertEq(manager.creatorBalances(owner), platformFee);
+    }
+
+    function testPlatformFeeMaximum() public {
+        // Set to maximum 10%
+        manager.updatePlatformFee(1000);
+        assertEq(manager.s_platformFeePercent(), 1000);
+    }
+
+    // ============ Withdrawal Tests ============
+
+    function testMultipleWithdrawals() public {
+        // Subscribe
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        uint256 platformFee = (TIER_PRICE * 300) / 10000;
+        uint256 creatorAmount = TIER_PRICE - platformFee;
+
+        // First withdrawal
+        vm.prank(creator);
+        manager.withdrawFunds();
+
+        assertEq(manager.creatorBalances(creator), 0);
+
+        // Subscribe again
+        vm.startPrank(subscriber2);
+        usdc.approve(address(manager), TIER_PRICE);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        // Second withdrawal
+        uint256 balanceBefore = usdc.balanceOf(creator);
+        vm.prank(creator);
+        manager.withdrawFunds();
+
+        assertEq(usdc.balanceOf(creator) - balanceBefore, creatorAmount);
+    }
+
+    function testOwnerCanWithdrawPlatformFees() public {
+        // Subscribe
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        uint256 platformFee = (TIER_PRICE * 300) / 10000;
+
+        // Owner withdraws
+        uint256 balanceBefore = usdc.balanceOf(owner);
+        manager.withdrawFunds();
+
+        assertEq(usdc.balanceOf(owner) - balanceBefore, platformFee);
+    }
+
+    // ============ View Function Tests ============
+
+    function testGetSubscription() public {
+        // Subscribe
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        uint256 subId = manager.subscribe(creator, 0, true);
+        vm.stopPrank();
+
+        SubscriptionManager.Subscription memory sub = manager.getSubscription(subId);
+
+        assertEq(sub.id, 1);
+        assertEq(sub.subscriber, subscriber);
+        assertEq(sub.creator, creator);
+        assertEq(sub.tier, 0);
+        assertEq(sub.amount, TIER_PRICE);
+        assertTrue(sub.isActive);
+        assertTrue(sub.autoRenew);
+    }
+
+    function testGetTier() public {
+        SubscriptionManager.CreatorTier memory tier = manager.getTier(creator, 0);
+
+        assertEq(tier.price, TIER_PRICE);
+        assertEq(tier.duration, TIER_DURATION);
+        assertEq(tier.name, "Basic");
+        assertTrue(tier.isActive);
+    }
+
+    function testGetCreatorTiersEmpty() public {
+        address newCreator = makeAddr("newCreator");
+        SubscriptionManager.CreatorTier[] memory tiers = manager.getCreatorTiers(newCreator);
+        assertEq(tiers.length, 0);
+    }
+
+    // ============ Insufficient Balance Tests ============
+
+    function testCannotSubscribeWithInsufficientBalance() public {
+        address poorSubscriber = makeAddr("poorSubscriber");
+        usdc.mint(poorSubscriber, 5 * 10**6); // Only $5
+
+        vm.startPrank(poorSubscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        vm.expectRevert(); // Will revert due to insufficient balance in ERC20
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+    }
+
+    function testCannotSubscribeWithoutApproval() public {
+        vm.prank(subscriber);
+        vm.expectRevert(); // Will revert due to insufficient allowance
+        manager.subscribe(creator, 0, false);
+    }
+
+    // ============ Auto-Renew Tests ============
+
+    function testAutoRenewFlag() public {
+        // Subscribe with auto-renew enabled
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        manager.subscribe(creator, 0, true);
+        vm.stopPrank();
+
+        (,,,,,,, , bool autoRenew) = manager.subscriptions(1);
+        assertTrue(autoRenew);
+
+        // Subscribe subscriber2 with auto-renew disabled
+        vm.startPrank(subscriber2);
+        usdc.approve(address(manager), TIER_PRICE);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        (,,,,,,, , bool autoRenew2) = manager.subscriptions(2);
+        assertFalse(autoRenew2);
+    }
+
+    function testCancelDisablesAutoRenew() public {
+        // Subscribe with auto-renew
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        manager.subscribe(creator, 0, true);
+
+        // Cancel
+        manager.cancelSubscription(creator);
+        vm.stopPrank();
+
+        (,,,,,,, , bool autoRenew) = manager.subscriptions(1);
+        assertFalse(autoRenew);
+    }
+
+    // ============ Admin Function Tests ============
+
+    function testOnlyOwnerCanUpdatePlatformFee() public {
+        vm.prank(subscriber);
+        vm.expectRevert();
+        manager.updatePlatformFee(400);
+    }
+
+    function testOnlyOwnerCanSetAccessPassNFT() public {
+        address newNFT = makeAddr("newNFT");
+
+        vm.prank(subscriber);
+        vm.expectRevert();
+        manager.setAccessPassNFT(newNFT);
+
+        // Owner can set it
+        manager.setAccessPassNFT(newNFT);
+        assertEq(manager.s_accessPassNFT(), newNFT);
+    }
+
+    function testOnlyOwnerCanPause() public {
+        vm.prank(subscriber);
+        vm.expectRevert();
+        manager.pause();
+    }
+
+    function testOnlyOwnerCanUnpause() public {
+        manager.pause();
+
+        vm.prank(subscriber);
+        vm.expectRevert();
+        manager.unpause();
+    }
+
+    // ============ Event Emission Tests ============
+
+    function testTierCreatedEvent() public {
+        vm.expectEmit(true, false, false, true);
+        emit TierCreated(creator, 1, 20 * 10**6, 60 days, "Premium");
+
+        vm.prank(creator);
+        manager.createTier(20 * 10**6, 60 days, "Premium");
+    }
+
+    function testFundsWithdrawnEvent() public {
+        // Subscribe first
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        uint256 platformFee = (TIER_PRICE * 300) / 10000;
+        uint256 creatorAmount = TIER_PRICE - platformFee;
+
+        vm.expectEmit(true, false, false, true);
+        emit FundsWithdrawn(creator, creatorAmount);
+
+        vm.prank(creator);
+        manager.withdrawFunds();
+    }
+
+    function testPlatformFeeUpdatedEvent() public {
+        vm.expectEmit(false, false, false, true);
+        emit PlatformFeeUpdated(500);
+
+        manager.updatePlatformFee(500);
+    }
+
+    function testSubscriptionRenewedEvent() public {
+        // Subscribe
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE * 2);
+        manager.subscribe(creator, 0, false);
+
+        uint256 firstEndTime = block.timestamp + TIER_DURATION;
+        uint256 expectedEndTime = firstEndTime + TIER_DURATION;
+
+        vm.expectEmit(true, false, false, true);
+        emit SubscriptionRenewed(1, expectedEndTime);
+
+        manager.renewSubscription(creator);
+        vm.stopPrank();
+    }
+
+    // ============ Counter Tests ============
+
+    function testSubscriptionCounterIncrement() public {
+        assertEq(manager.s_subscriptionCounter(), 0);
+
+        // First subscription
+        vm.startPrank(subscriber);
+        usdc.approve(address(manager), TIER_PRICE);
+        uint256 subId1 = manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        assertEq(subId1, 1);
+        assertEq(manager.s_subscriptionCounter(), 1);
+
+        // Second subscription
+        vm.startPrank(subscriber2);
+        usdc.approve(address(manager), TIER_PRICE);
+        uint256 subId2 = manager.subscribe(creator, 0, false);
+        vm.stopPrank();
+
+        assertEq(subId2, 2);
+        assertEq(manager.s_subscriptionCounter(), 2);
+    }
+
+    function testCreatorTierCounterIncrement() public {
+        assertEq(manager.creatorTierCount(creator), 1); // Already has 1 from setup
+
+        vm.startPrank(creator);
+        manager.createTier(20 * 10**6, 60 days, "Premium");
+        assertEq(manager.creatorTierCount(creator), 2);
+
+        manager.createTier(50 * 10**6, 365 days, "VIP");
+        assertEq(manager.creatorTierCount(creator), 3);
+        vm.stopPrank();
     }
 }
